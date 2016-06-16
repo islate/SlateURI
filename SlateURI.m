@@ -1,111 +1,156 @@
 //
 //  SlateURI.m
-//  SlateCore
+//  Slate
 //
-//  Created by linyize on 14/12/8.
+//  Created by yize lin on 16-6-16.
+//  Copyright (c) 2016年 Modern Mobile Digital Media Company Limited. All rights reserved.
 //
 
 #import "SlateURI.h"
 
+#import "SlateUtils.h"
+
 @interface SlateURI ()
 
-+ (void)openURIInMainThread:(NSURL *)uri;
-+ (void)handleURICommand:(NSString *)command params:(NSString *)params paramsArray:(NSArray *)paramsArray;
+@property (nonatomic, strong) NSMutableArray<id<SlateURIHandler>> *handlers;
+@property (nonatomic, strong) NSString *scheme;
+
++ (instancetype)sharedURI;
+
+- (void)addHandlers:(NSArray<id<SlateURIHandler>>*)handlers;
+- (void)setPriorHandler:(id<SlateURIHandler>)handler;
+
+- (id<SlateURIHandler>)handlerForCommandSelector:(SEL)commandSelector;
+- (BOOL)canOpenURI:(NSURL *)uri;
+- (void)openURI:(NSURL *)uri completion:(SlateURICompletionBlock)completion;
+- (void)openURIInMainThread:(NSURL *)uri completion:(SlateURICompletionBlock)completion;
+- (void)handleURICommand:(NSString *)command params:(NSString *)params paramsArray:(NSArray *)paramsArray completion:(SlateURICompletionBlock)completion;
 
 @end
 
 @implementation SlateURI
 
-static id <SlateURIHandler> _handler = nil;
-
-+ (void)registerURIHandler:(id <SlateURIHandler>)handler
++ (instancetype)sharedURI
 {
-    _handler = handler;
+    static id _sharedInstance = nil;
+    static dispatch_once_t  once = 0;
+    
+    dispatch_once(&once, ^{
+        _sharedInstance = [[self alloc] init];
+    });
+    return _sharedInstance;
 }
 
-+ (id<SlateURIHandler>)handler
++ (void)addHandlers:(NSArray<id<SlateURIHandler>>*)handlers
 {
-    return _handler;
+    [[SlateURI sharedURI] addHandlers:handlers];
+}
+
++ (void)setPriorHandler:(id<SlateURIHandler>)handler
+{
+    [[SlateURI sharedURI] setPriorHandler:handler];
+}
+
++ (void)setScheme:(NSString *)scheme
+{
+    [SlateURI sharedURI].scheme = scheme;
 }
 
 + (BOOL)canOpenURI:(NSURL *)uri
 {
-    NSString    *scheme = [uri scheme];
-    NSString    *path = [uri path];
-    
-    return [scheme isEqualToString:[_handler scheme]] ||
-    ([scheme isEqualToString:@"http"] && [path hasPrefix:[NSString stringWithFormat:@"/%@", [_handler scheme]]]);
+    return [[SlateURI sharedURI] canOpenURI:uri];
 }
-
-// 例子:     url=@"slate://article/4/12/238/" 或 @"http://www.xxx.com/slate/article/4/12/238/"
-//          command=@"article"
-//          params=@"/4/12/238"
 
 + (void)openURI:(NSURL *)uri
 {
+    [[SlateURI sharedURI] openURI:uri completion:nil];
+}
 
-    if (_handler == nil)
++ (void)openURI:(NSURL *)uri location:(NSString *)location
+{
+    [[SlateURI sharedURI] openURI:uri completion:nil];
+}
+
++ (void)openURI:(NSURL *)uri completion:(SlateURICompletionBlock)completion
+{
+    [[SlateURI sharedURI] openURI:uri completion:completion];
+}
+
++ (void)handleURICommand:(NSString *)command params:(NSString *)params paramsArray:(NSArray *)paramsArray completion:(SlateURICompletionBlock)completion
+{
+    [[SlateURI sharedURI] handleURICommand:command params:params paramsArray:paramsArray completion:completion];
+}
+
+- (instancetype)init
+{
+    self = [super init];
+    if (self) {
+        _handlers = [NSMutableArray new];
+        _scheme = @"slate";
+    }
+    return self;
+}
+
+- (void)addHandlers:(NSArray<id<SlateURIHandler>>*)handlers
+{
+    [_handlers addObjectsFromArray:handlers];
+}
+
+- (void)setPriorHandler:(id<SlateURIHandler>)handler
+{
+    [_handlers insertObject:handler atIndex:0];
+}
+
+- (id<SlateURIHandler>)handlerForCommandSelector:(SEL)commandSelector
+{
+    for (id handler in _handlers)
+    {
+        if ([handler respondsToSelector:commandSelector])
+        {
+            return handler;
+        }
+    }
+    return nil;
+}
+
+- (BOOL)canOpenURI:(NSURL *)url
+{
+    return [url.scheme.lowercaseString isEqualToString:_scheme];
+}
+
+// 例子:     url=@"slate://article/4/12/238/"
+//          command=@"article"
+//          params=@"/4/12/238"
+- (void)openURI:(NSURL *)uri completion:(SlateURICompletionBlock)completion
+{
+    NSLog(@" --openURI-- %@ ", uri.absoluteString);
+
+    if (uri == nil)
     {
         return;
     }
     
     if ([NSThread isMainThread])
     {
-        [self openURIInMainThread:uri];
+        [self openURIInMainThread:uri completion:completion];
     }
     else
     {
         dispatch_async(dispatch_get_main_queue(), ^
-                       {
-                           [self openURIInMainThread:uri];
-                       });
+        {
+            [self openURIInMainThread:uri completion:completion];
+        });
     }
 }
 
-+ (void)openURIInMainThread:(NSURL *)uri
+- (void)openURIInMainThread:(NSURL *)uri completion:(SlateURICompletionBlock)completion
 {
-    NSString *scheme = [uri scheme];
-    NSString *path = [uri path];
-    NSString *command = @"";
-    NSString *params = @"";
-    
-    if ([scheme isEqualToString:[_handler scheme]])
+    NSString *command = uri.host;
+    NSUInteger from = [_scheme length] + command.length + 4;
+    NSString *params = nil;
+    if (uri.absoluteString.length > from)
     {
-        // 形如 slate://article/4/12/238/
-        command = [uri host];
-        
-        NSString *urlString = uri.absoluteString;
-        NSUInteger from = [[_handler scheme] length] + command.length + 4;
-        
-        if (urlString.length > from)
-        {
-            params = [urlString substringFromIndex:from];
-        }
-    }
-    else if ([scheme isEqualToString:@"http"] && [path hasPrefix:[NSString stringWithFormat:@"/%@", [_handler scheme]]])
-    {
-        // 形如 http://www.xxx.com/slate/article/4/12/238/
-        
-        NSArray *pathArray = [[uri path] componentsSeparatedByString:@"/"];
-        if ([pathArray count] < 3)
-        {
-            return;
-        }
-        
-        command = [pathArray objectAtIndex:2];
-        
-        NSString *urlString = uri.absoluteString;
-        NSUInteger from = 10 + uri.host.length + [[_handler scheme] length] + command.length;
-        
-        if (urlString.length > from)
-        {
-            params = [urlString substringFromIndex:from];
-        }
-    }
-    else
-    {
-        [_handler unknownURI:uri];
-        return;
+        params = [uri.absoluteString substringFromIndex:from];
     }
     
     NSMutableArray *paramsArray = [NSMutableArray arrayWithArray:[params componentsSeparatedByString:@"/"]];
@@ -114,59 +159,93 @@ static id <SlateURIHandler> _handler = nil;
     {
         if (param.length > 0)
         {
-            [newParamsArray addObject:[self decodeSlateURI:param]];
+            NSString *unescapedParam = [param stringUnescapedAsURIComponent];
+            if (!unescapedParam)
+            {
+                unescapedParam = @"";
+            }
+            [newParamsArray addObject:unescapedParam];
         }
     }
-
-    params = [self decodeSlateURI:params];
     
-    // open uri
-    [self handleURICommand:command params:params paramsArray:newParamsArray];
+    if (params.length > 0)
+    {
+        NSString *unescapedParams = [params stringUnescapedAsURIComponent];
+        if (!unescapedParams)
+        {
+            unescapedParams = @"";
+        }
+        params = unescapedParams;
+    }
+
+    [self handleURICommand:command params:params paramsArray:newParamsArray completion:completion];
 }
 
-+ (NSString *)decodeSlateURI:(NSString *)params
+- (void)handleURICommand:(NSString *)command params:(NSString *)params paramsArray:(NSArray *)paramsArray completion:(SlateURICompletionBlock)completion
 {
-    return (NSString *)CFBridgingRelease(CFURLCreateStringByReplacingPercentEscapesUsingEncoding(NULL, (CFStringRef)params, CFSTR("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.!~*'()"), kCFStringEncodingUTF8)) ;
-}
-
-+ (void)handleURICommand:(NSString *)command params:(NSString *)params paramsArray:(NSArray *)paramsArray
-{
-    NSString *commandSelectorString = [NSString stringWithFormat:@"%@Command:params:paramsArray:",command];
+    NSString *commandSelectorString = [NSString stringWithFormat:@"%@Command:params:paramsArray:completion:",command];
     SEL commandSelector = NSSelectorFromString (commandSelectorString);
-    NSMethodSignature *signature = [[_handler class] instanceMethodSignatureForSelector:commandSelector];
+    
+    id handler = [self handlerForCommandSelector:commandSelector];
+    if (handler == nil)
+    {
+        NSLog(@"SlateURI doesn't know how to handle command: %@", command);
+        
+        if (completion)
+        {
+            NSError* error = nil;
+            NSMutableDictionary* errorDetail = [[NSMutableDictionary alloc] init];
+            [errorDetail setValue:@"no handler" forKey:NSLocalizedDescriptionKey];
+            error = [NSError errorWithDomain:@"SlateURIError" code:1000 userInfo:errorDetail];
+            completion(nil, error);
+        }
+        return;
+    }
+    
+    if ([handler respondsToSelector:@selector(willHandleCommand:params:paramsArray:)])
+    {
+        [handler willHandleCommand:command params:params paramsArray:paramsArray];
+    }
+    
+    NSMethodSignature *signature = [[handler class] instanceMethodSignatureForSelector:commandSelector];
     NSInvocation *invocation = nil;
-    NSArray *args = [NSArray arrayWithObjects:command ? command : @"",
-                     params ? params : @"",
-                     paramsArray ? paramsArray : @"",
-                     nil];
     
     if (signature)
     {
         invocation = [NSInvocation invocationWithMethodSignature:signature];
         [invocation retainArguments];
         invocation.selector = commandSelector;
-        invocation.target = _handler;
-        [args enumerateObjectsUsingBlock:^(id obj, NSUInteger idx, BOOL * stop) {
-            [invocation setArgument:&obj atIndex:idx + 2];
-        }];
+        invocation.target = handler;
+        [invocation setArgument:&command atIndex:2];
+        [invocation setArgument:&params atIndex:3];
+        [invocation setArgument:&paramsArray atIndex:4];
+        [invocation setArgument:&completion atIndex:5];
     }
     
-    if (invocation && [_handler respondsToSelector:commandSelector])
+    if (invocation && [handler respondsToSelector:commandSelector])
     {
         @try {
             [invocation invoke];
         }
         @catch(NSException *exception) {
-            NSLog (@"NSInvocation exception on %@ %@", _handler, commandSelectorString);
+            NSLog (@"NSInvocation exception on %@ %@", handler, commandSelectorString);
             NSLog (@"%@ %@", [exception name], [exception reason]);
             NSLog (@"%@", [[exception callStackSymbols] componentsJoinedByString:@"\n"]);
+            
+            if (completion)
+            {
+                NSError* error = nil;
+                NSMutableDictionary* errorDetail = [[NSMutableDictionary alloc] init];
+                [errorDetail setValue:@"throw exception" forKey:NSLocalizedDescriptionKey];
+                error = [NSError errorWithDomain:@"SlateURIError" code:1001 userInfo:errorDetail];
+                completion(nil, error);
+            }
         }
     }
-    else
+    
+    if ([handler respondsToSelector:@selector(didHandleCommand:params:paramsArray:)])
     {
-        NSLog (@"NSInvocation doesn't know how to run method: %@ %@", _handler, commandSelectorString);
-        
-        [_handler unknownCommand:command params:params paramsArray:paramsArray];
+        [handler didHandleCommand:command params:params paramsArray:paramsArray];
     }
 }
 
